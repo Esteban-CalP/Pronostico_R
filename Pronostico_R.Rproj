@@ -1,13 +1,482 @@
-Version: 1.0
+library(dplyr)
+library(TSstudio)
+library(lubridate)
+library(forecast)
+library(plotly)
+library(smooth)
 
-RestoreWorkspace: Default
-SaveWorkspace: Default
-AlwaysSaveHistory: Default
+#Creación de los dataframes----
 
-EnableCodeIndexing: Yes
-UseSpacesForTab: Yes
-NumSpacesForTab: 4
-Encoding: ISO8859-1
+file.choose()
 
-RnwWeave: Sweave
-LaTeX: pdfLaTeX
+movimientos <- read.csv("~\proyectoPronostico\\proyecto\\movimientos_Dur_Maz_2011_2017.csv",
+                        header = T, sep = ",", stringsAsFactors = F)
+
+
+Fecha <- seq.Date(from = as.Date("2011-01-01"),
+                  by = "month",
+                  length.out = 84)
+
+movimientos_total <- data.frame(Fecha, movimientos$Total)
+
+#library(dplyr)
+
+movimientos_total <- movimientos_total %>% arrange(movimientos_total$Fecha)
+
+movimientos_2 <- read.csv("~\proyectoPronostico\\proyecto\\movimientos_Dur_Maz_2018.csv",
+                             header = F, sep = ",", stringsAsFactors = F)
+
+Fecha_2 <- seq.Date(from = as.Date("2018-01-01"),
+                  by = "month",
+                  length.out = 12)
+
+movimientos_2018 <- data.frame(Fecha_2, movimientos_2$V5)
+
+movimientos_2018 <- movimientos_2018 %>% arrange(movimientos_2018$Fecha_2)
+
+#Creacion de los objetos ts----
+#library(TSstudio)
+#library(lubridate)
+
+movimientos_total_ts <- ts(data = movimientos_total$movimientos.Total,
+                           start = c(year(min(movimientos_total$Fecha)),
+                                     month(min(movimientos_total$Fecha))),
+                           frequency = 12)
+
+ts_info(movimientos_total_ts)
+
+ts_plot(movimientos_total_ts, type = "single",
+        title = "Movimientos Carretera Durango-Mazatlan",
+        Ytitle = "Vehiculos",
+        Ygrid = TRUE,
+        Xgrid = TRUE,
+        Xtitle = "Ano",
+        slider = FALSE)
+
+movimientos_2018_ts <- ts(data = movimientos_2018$movimientos_2.V5,
+                          start = c(year(min(movimientos_2018$Fecha_2)),
+                                    month(min(movimientos_2018$Fecha_2))),
+                          frequency = 12)
+
+ts_info(movimientos_2018_ts)
+
+ts_plot(movimientos_2018_ts, type = "single",
+        title = "Movimientos Carretera Durango-Mazatlan 2018",
+        Ytitle = "Vehiculos",
+        Ygrid = TRUE,
+        Xgrid = TRUE,
+        Xtitle = "Ano",
+        slider = F)
+
+plot(movimientos_2018_ts)
+
+#Analisis de descomposicion----
+
+ts_heatmap(movimientos_total_ts, 
+           title = "Mapa de Calor Carretera Durango-MazatlÃ¡n")
+
+#library(forecast)
+
+ggseasonplot(movimientos_total_ts,
+             polar = T, 
+             main = "Estacionalidad Carretera Durango-MazatlÃ¡n")
+
+
+ts_seasonal(movimientos_total_ts, type = "all", 
+            title = "AnÃ¡lisis de Estacionalidad Carretera Durango-MazatlÃ¡n")
+
+ts_decompose(movimientos_total_ts)
+
+# 1er modelo - regresion lineal----
+
+movimientos_total_df <- ts_to_prophet(movimientos_total_ts)
+
+head(movimientos_total_df)
+
+movimientos_total_df$trend <- 1:nrow(movimientos_total_df)
+
+#library(lubridate)
+
+movimientos_total_df$seasonal <- month(movimientos_total_df$ds, label = T)
+
+head(movimientos_total_df)
+
+#Creacion de las particiones test y train----
+h <- 12
+
+train <- movimientos_total_df[1:(nrow(movimientos_total_df) - h), ]
+
+test <- movimientos_total_df[(nrow(movimientos_total_df) - h + 1):nrow(movimientos_total_df), ]
+
+#Creacion del modelo de regresion con Tendencia----
+
+md_trend <- lm(y ~ trend, data = train)
+
+summary(md_trend)
+
+train$yhat <- predict(md_trend, newdata = train)
+
+test$yhat <- predict(md_trend, newdata = test)
+
+#________________________________
+#Creacion de la funcion plot_lm para poder graficar objetos lm en plotly----
+
+#library(plotly)
+
+plot_lm <- function(data, train, test, title = NULL){
+  p <- plot_ly(data = data, 
+               x = ~ ds, 
+               y = ~ y, 
+               type = "scatter",
+               mode = "line",
+               name = "Actual") %>%
+    add_lines(x =  ~ train$ds,
+              y = ~ train$yhat,
+              line = list(color = "red"),
+              name = "Fitted") %>%
+    add_lines(x =  ~ test$ds,
+              y = ~ test$yhat,
+              line = list(color = "green", dash = "dot", width = 3),
+              name = "Forecasted") %>%
+    layout(title = title,
+           xaxis = list(title = ""),
+           yaxis = list(title = "Billion Cubic Feet"),
+           legend = list(x = 0.05, y = 0.95))
+  return(p)
+}
+#_______________________________________
+
+plot_lm(data = movimientos_total_df, 
+        train = train, 
+        test = test,
+        title = "Prediccion del Componente Tendencia de la Serie")
+
+mape_trend <- c(mean(abs(train$y - train$yhat) / train$y),
+                mean(abs(test$y - test$yhat) / test$y))
+
+mape_trend
+
+# Creacion del modelo de regresion con Estacionalidad----
+
+md_seasonal <- lm(y ~ seasonal, data = train)
+
+summary(md_seasonal)
+
+train$yhat <- predict(md_seasonal, newdata = train)
+
+test$yhat <- predict(md_seasonal, newdata = test)
+
+plot_lm(data = movimientos_total_df, 
+        train = train, 
+        test = test,
+        title = "Prediccion del Componente Estacionalidad de la Serie")
+
+mape_seasonal <- c(mean(abs(train$y - train$yhat) / train$y),
+                mean(abs(test$y - test$yhat) / test$y))
+
+mape_seasonal
+
+# Creacion del modelo de regresion con Tendencia y Estacionalidad----
+
+md1 <- lm(y ~ seasonal + trend, data = train)
+
+summary(md1)
+
+train$yhat <- predict(md1, newdata = train)
+
+test$yhat <- predict(md1, newdata = test)
+
+plot_lm(data = movimientos_total_df, 
+        train = train, 
+        test = test,
+        title = "Prediccion de los Componentes Estacionalidad y Tendencia de la Serie")
+
+mape_md1 <- c(mean(abs(train$y - train$yhat) / train$y),
+              mean(abs(test$y - test$yhat) / test$y))
+mape_md1
+
+# Creacion del modelo de regresion con Tendencia, Estacionalidad y Componente Polinomial----
+
+md2 <- lm(y ~ seasonal + trend + I(trend^2), data = train)
+
+summary(md2)
+
+train$yhat <- predict(md2, newdata = train)
+
+test$yhat <- predict(md2, newdata = test)
+
+plot_lm(data = movimientos_total_df, 
+        train = train, 
+        test = test,
+        title = "Prediccion de los Componentes Estacionalidad y Tendencia de la Serie")
+
+mape_md2 <- c(mean(abs(train$y - train$yhat) / train$y),
+              mean(abs(test$y - test$yhat) / test$y))
+mape_md2
+
+# Pronostico Regresion Lineal----
+
+h <-  12
+
+movimientos_total_partitions <- ts_split(movimientos_total_ts, sample.out = h)
+
+train_ts <- movimientos_total_partitions$train
+
+test_ts <- movimientos_total_partitions$test
+
+train_df <- movimientos_total_df[1:(nrow(movimientos_total_df) - h), ]
+
+test_df <- movimientos_total_df[(nrow(movimientos_total_df) - h + 1):nrow(movimientos_total_df), ]
+
+md_tslm1 <- tslm(train_ts ~ trend + season)
+
+fc_tslm1 <- forecast(md_tslm1, h = 12)
+
+test_forecast(actual = movimientos_total_ts,
+              forecast.obj = fc_tslm1,
+              test = test_ts)
+
+accuracy(fc_tslm1, test_ts)
+
+ts_plot(residuals(fc_tslm1))
+
+movimientos_fc_df <- data.frame(date = seq.Date(from = max(movimientos_total_df$ds) + months(1), 
+                                       by = "month", 
+                                       length.out = h))
+
+movimientos_fc <- forecast(fc_tslm1, h = 12, newdata = movimientos_fc_df)
+
+test_forecast(actual = movimientos_total_ts,
+              forecast.obj = movimientos_fc,
+              test = test_ts)
+
+plot_forecast(movimientos_fc,
+              title = "Pronostico de Movimientos en la Autopista Durango-Mazatlan",
+              Ytitle = "No. Vehiculos",
+              Xtitle = "Ano")
+
+accuracy(movimientos_fc, test_ts)
+
+# 2do modelo Suavizamiento Exponencial----
+# Metodo de Holt----
+
+movimientos_partition_holt <- ts_split(movimientos_total_ts, sample.out = 12)
+
+train_holt <- movimientos_partition_holt$train
+
+test_holt <- movimientos_partition_holt$test
+
+fc_holt <- holt(train_holt,
+                h = 12, 
+                initial = "optimal")
+
+fc_holt$model
+
+accuracy(fc_holt, test_holt)
+
+test_forecast(movimientos_total_ts, 
+              forecast.obj = fc_holt, 
+              test = test_holt)
+
+fc_holt_exp <- holt(train_holt,
+                h = 12, 
+                beta = 0.4,
+                initial = "optimal",
+                exponential = T)
+
+fc_holt_exp$model
+
+accuracy(fc_holt_exp, test_holt)
+
+test_forecast(movimientos_total_ts, 
+              forecast.obj = fc_holt_exp, 
+              test = test_holt)
+
+#Metodo Holt-Winters----
+
+movimientos_partition_hw <- ts_split(movimientos_total_ts, sample.out = 12)
+
+train_hw <- movimientos_partition_holt$train
+
+test_hw <- movimientos_partition_holt$test
+
+md_hw <- HoltWinters(train_hw)
+md_hw$alpha
+
+fc_hw <- forecast(md_hw, h = 12)
+
+accuracy(fc_hw, test_hw)
+
+test_forecast(movimientos_total_ts, 
+              forecast.obj = fc_hw, 
+              test = test_hw)
+
+#Busqueda de lo valores optimos beta, alpha y gamma
+#Shallow Grid
+
+shallow_grid <-  ts_grid(train_hw, 
+                         model = "HoltWinters",
+                         periods = 6,
+                         window_space = 6,
+                         window_test = 12,
+                         hyper_params = list(alpha = seq(0,1,0.1),
+                                             beta = seq(0,1,0.1),
+                                             gamma = seq(0,1,0.1)),
+                         parallel = TRUE,
+                         n.cores = 8)
+
+shallow_grid$grid_df[1:10,]
+
+plot_grid(shallow_grid)
+
+md_hw_shallow_grid <- HoltWinters(train_hw, 
+                          alpha = shallow_grid$alpha,
+                          beta = shallow_grid$beta,
+                          gamma = shallow_grid$gamma)
+
+fc_hw_shallow_grid <- forecast(md_hw_shallow_grid, h = 12)
+
+accuracy(fc_hw_shallow_grid, test_hw)
+
+test_forecast(actual = movimientos_total_ts, 
+              forecast.obj = fc_hw_shallow_grid, 
+              test = test_hw)
+#Deep Grid
+
+deep_grid <-  ts_grid(train_hw, 
+                      model = "HoltWinters",
+                      periods = 6,
+                      window_space = 6,
+                      window_test = 12,
+                      hyper_params = list(alpha = seq(0.1,0.5,0.01),
+                                          beta = seq(0,0.1,0.01),
+                                          gamma = seq(0.2,0.4,0.01)),
+                      parallel = TRUE,
+                      n.cores = 8)
+
+plot_grid(deep_grid)
+
+plot_grid(deep_grid, type = "3D", top = 250)
+
+md_hw_grid <- HoltWinters(train_hw, 
+                          alpha = deep_grid$alpha,
+                          beta = deep_grid$beta,
+                          gamma = deep_grid$gamma)
+
+fc_hw_grid <- forecast(md_hw_grid, h = 12)
+
+accuracy(fc_hw_grid, test_hw)
+
+test_forecast(actual = movimientos_total_ts, 
+              forecast.obj = fc_hw_grid, 
+              test = test_hw)
+
+#4to modelo Modelo SARIMA----
+#Busqueda Automatica de (p,d,q)x(P,D,Q)
+# Chequeo de acf y pacf
+
+ts_cor(movimientos_total_ts, lag.max = 12 * 7)
+
+ts_cor(movimientos_total_ts)
+
+movimientos_partition_sarima <- ts_split(movimientos_total_ts, sample.out = 12)
+ 
+train_sarima <- movimientos_partition_sarima$train
+ 
+test_sarima <- movimientos_partition_sarima$test
+
+md_sarima1 <- auto.arima(train_sarima)
+
+md_sarima1
+
+md_sarima1_fc <- forecast(md_sarima1, h = 12)
+
+test_forecast(movimientos_total_ts,
+              forecast.obj = md_sarima1_fc,
+              test = test_sarima)
+
+accuracy(md_sarima1_fc, test_sarima)
+
+checkresiduals(md_sarima1_fc)
+
+#Optimizacion de valores
+
+md_sarima2 <- auto.arima(train_sarima,
+                             max.order = 3,
+                             D = 1,
+                             d = 1,
+                             stepwise = FALSE,
+                             approximation = FALSE)
+
+md_sarima2
+
+md_sarima2_fc <- forecast(train_sarima, h = 12)
+
+test_forecast(movimientos_total_ts,
+              forecast.obj = md_sarima2_fc,
+              test = test_sarima)
+
+accuracy(md_sarima2_fc, test_ts)
+
+checkresiduals(md_sarima2_fc)
+
+# Modelo de suavizamiento para el año 2018----
+# Simple Moving Average
+library(smooth)
+
+ts_plot(movimientos_2018_ts)
+
+SMAModel3 <- sma(movimientos_2018_ts, h = 3, order = 3)
+
+summary(SMAModel3)
+
+SMAModel3$fitted
+
+forecast_sma3 <- forecast(SMAModel3, h = 3)
+
+plot(forecast_sma3,
+     main = "Simple Moving Average 3th Order",
+     ylim = c(40000, 100000))
+
+mape_sma3 <- mean(abs(movimientos_2018$movimientos_2.V5 - SMAModel3$fitted) /
+                    movimientos_2018$movimientos_2.V5)
+
+mape_sma3
+
+SMAModel5 <- sma(movimientos_2018_ts, h = 3, order = 5)
+
+summary(SMAModel5)
+
+SMAModel5$fitted
+
+forecast_sma5 <- forecast(SMAModel5, h = 3)
+
+plot(forecast_sma5,
+     main = "Simple Moving Average 5th Order",
+     ylim = c(40000, 100000))
+
+mape_sma5 <- mean(abs(movimientos_2018$movimientos_2.V5 - SMAModel5$fitted) /
+                    movimientos_2018$movimientos_2.V5)
+
+mape_sma5
+
+SMAModel7 <- sma(movimientos_2018_ts, order = 7)
+
+summary(SMAModel7)
+
+SMAModel7$fitted
+
+forecast_sma7 <- forecast(SMAModel7, h = 3)
+
+plot(forecast_sma7,
+     main = "Simple Moving Average 7th Order",
+     ylim = c(40000, 100000))
+
+movimientos_2018$movimientos_2.V5
+
+mape_sma7 <- mean(abs(movimientos_2018$movimientos_2.V5 - SMAModel7$fitted) / 
+                    movimientos_2018$movimientos_2.V5)
+
+mape_sma7   
+
+
